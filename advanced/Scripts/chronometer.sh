@@ -15,17 +15,15 @@
 piLog="/var/log/pihole.log"
 gravity="/etc/pihole/gravity.list"
 
-today=$(date "+%b %e")
+. /etc/pihole/setupVars.conf
 
-function CalcBlockedDomains(){
-	CheckIPv6
-	if [ -e "$gravity" ]; then
-		#Are we IPV6 or IPV4?
-		if [[ -n $piholeIPv6 ]];then
-			#We are IPV6
+CalcBlockedDomains() {
+	if [ -e "${gravity}" ]; then
+		# if BOTH IPV4 and IPV6 are in use, then we need to divide total domains by 2.
+		if [[ -n "${IPV4_ADDRESS}" && -n "${IPV6_ADDRESS}" ]]; then
 			blockedDomainsTotal=$(wc -l /etc/pihole/gravity.list | awk '{print $1/2}')
 		else
-			#We are IPV4
+			# only one is set.
 			blockedDomainsTotal=$(wc -l /etc/pihole/gravity.list | awk '{print $1}')
 		fi
 	else
@@ -33,43 +31,35 @@ function CalcBlockedDomains(){
 	fi
 }
 
-function CalcQueriesToday(){
-	if [ -e "$piLog" ];then
-		queriesToday=$(cat "$piLog" | grep "$today" | awk '/query/ {print $6}' | wc -l)
+CalcQueriesToday() {
+	if [ -e "${piLog}" ]; then
+		queriesToday=$(awk '/query\[/ {print $6}' < "${piLog}" | wc -l)
 	else
 		queriesToday="Err."
 	fi
 }
 
-function CalcblockedToday(){
-	if [ -e "$piLog" ] && [ -e "$gravity" ];then
-		blockedToday=$(cat $piLog | awk '/\/etc\/pihole\/gravity.list/ && !/address/ {print $6}' | wc -l)
+CalcblockedToday() {
+	if [ -e "${piLog}" ] && [ -e "${gravity}" ];then
+		blockedToday=$(awk '/\/etc\/pihole\/gravity.list/ && !/address/ {print $6}' < "${piLog}" | wc -l)
 	else
 		blockedToday="Err."
 	fi
 }
 
-function CalcPercentBlockedToday(){
-	if [ "$queriesToday" != "Err." ] && [ "$blockedToday" != "Err." ]; then
-		if [ "$queriesToday" != 0 ]; then #Fixes divide by zero error :)
-		 #scale 2 rounds the number down, so we'll do scale 4 and then trim the last 2 zeros
-			percentBlockedToday=$(echo "scale=4; $blockedToday/$queriesToday*100" | bc)
-			percentBlockedToday=$(sed 's/.\{2\}$//' <<< "$percentBlockedToday")
+CalcPercentBlockedToday() {
+	if [ "${queriesToday}" != "Err." ] && [ "${blockedToday}" != "Err." ]; then
+		if [ "${queriesToday}" != 0 ]; then #Fixes divide by zero error :)
+			#scale 2 rounds the number down, so we'll do scale 4 and then trim the last 2 zeros
+			percentBlockedToday=$(echo "scale=4; ${blockedToday}/${queriesToday}*100" | bc)
+			percentBlockedToday=$(sed 's/.\{2\}$//' <<< "${percentBlockedToday}")
 		else
 			percentBlockedToday=0
 		fi
 	fi
 }
 
-function CheckIPv6(){
-	piholeIPv6file="/etc/pihole/.useIPv6"
-	if [[ -f $piholeIPv6file ]];then
-	    # If the file exists, then the user previously chose to use IPv6 in the automated installer
-	    piholeIPv6=$(ip -6 route get 2001:4860:4860::8888 | awk -F " " '{ for(i=1;i<=NF;i++) if ($i == "src") print $(i+1) }')
-	fi
-}
-
-function outputJSON(){
+outputJSON() {
 	CalcQueriesToday
 	CalcblockedToday
 	CalcPercentBlockedToday
@@ -79,9 +69,8 @@ function outputJSON(){
 	printf '{"domains_being_blocked":"%s","dns_queries_today":"%s","ads_blocked_today":"%s","ads_percentage_today":"%s"}\n' "$blockedDomainsTotal" "$queriesToday" "$blockedToday" "$percentBlockedToday"
 }
 
-function normalChrono(){
-	for (( ; ; ))
-	do
+normalChrono() {
+	for (( ; ; )); do
 		clear
 		# Displays a colorful Pi-hole logo
 		echo " [0;1;35;95m_[0;1;31;91m__[0m [0;1;33;93m_[0m     [0;1;34;94m_[0m        [0;1;36;96m_[0m"
@@ -89,7 +78,7 @@ function normalChrono(){
 		echo "[0;1;33;93m|[0m  [0;1;32;92m_[0;1;36;96m/[0m [0;1;34;94m|_[0;1;35;95m__[0;1;31;91m|[0m [0;1;33;93m'[0m [0;1;32;92m\/[0m [0;1;36;96m_[0m [0;1;34;94m\[0m [0;1;35;95m/[0m [0;1;31;91m-[0;1;33;93m_)[0m"
 		echo "[0;1;32;92m|_[0;1;36;96m|[0m [0;1;34;94m|_[0;1;35;95m|[0m   [0;1;33;93m|_[0;1;32;92m||[0;1;36;96m_\[0;1;34;94m__[0;1;35;95m_/[0;1;31;91m_\[0;1;33;93m__[0;1;32;92m_|[0m"
 		echo ""
-		echo "        $(ifconfig eth0 | awk '/inet addr/ {print $2}' | cut -d':' -f2)"
+		echo "        ${IPV4_ADDRESS}"
 		echo ""
 		uptime | cut -d' ' -f11-
 		#uptime -p	#Doesn't work on all versions of uptime
@@ -111,38 +100,36 @@ function normalChrono(){
 
 		CalcBlockedDomains
 
-		echo "Blocking:      $blockedDomainsTotal"
-		#below commented line does not add up to todaysQueryCount
-		#echo "Queries:       $todaysQueryCountV4 / $todaysQueryCountV6"
-		echo "Queries:       $queriesToday" #same total calculation as dashboard
-	  echo "Pi-holed:      $blockedToday ($percentBlockedToday%)"
+		echo "Blocking:      ${blockedDomainsTotal}"
+		echo "Queries:       ${queriesToday}" #same total calculation as dashboard
+		echo "Pi-holed:      ${blockedToday} (${percentBlockedToday}%)"
 
 		sleep 5
 	done
 }
 
-function displayHelp(){
- 	echo "::: Displays stats about your piHole!"
-    echo ":::"
-    echo "::: Usage: sudo pihole -c [optional:-j]"
-    echo "::: Note: If no option is passed, then stats are displayed on screen, updated every 5 seconds"
-    echo ":::"
-    echo "::: Options:"
-    echo ":::  -j, --json		output stats as JSON formatted string"
-    echo ":::  -h, --help		display this help text"
-
-    exit 1
+displayHelp() {
+	cat << EOM
+::: Displays stats about your piHole!
+:::
+::: Usage: sudo pihole -c [optional:-j]
+::: Note: If no option is passed, then stats are displayed on screen, updated every 5 seconds
+:::
+::: Options:
+:::  -j, --json		output stats as JSON formatted string
+:::  -h, --help		display this help text
+EOM
+    exit 0
 }
 
 if [[ $# = 0 ]]; then
 	normalChrono
 fi
 
-for var in "$@"
-do
-  case "$var" in
-    "-j" | "--json"  ) outputJSON;;
-    "-h" | "--help"  ) displayHelp;;
-    *                ) exit 1;;
-  esac
+for var in "$@"; do
+	case "$var" in
+		"-j" | "--json"  ) outputJSON;;
+		"-h" | "--help"  ) displayHelp;;
+		*                ) exit 1;;
+	esac
 done

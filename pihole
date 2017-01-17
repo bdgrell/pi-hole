@@ -10,105 +10,288 @@
 # the Free Software Foundation, either version 2 of the License, or
 # (at your option) any later version.
 
+PI_HOLE_SCRIPT_DIR="/opt/pihole"
 # Must be root to use this tool
 if [[ ! $EUID -eq 0 ]];then
-	#echo "::: You are root."
-#else
-	#echo "::: Sudo will be used for this tool."
-  # Check if it is actually installed
-  # If it isn't, exit because the pihole cannot be invoked without privileges.
-  if [[ $(dpkg-query -s sudo) ]];then
-		export SUDO="sudo"
+  if [ -x "$(command -v sudo)" ];then
+    exec sudo bash "$0" "$@"
+    exit $?
   else
-    echo "::: Please install sudo or run this as root."
+    echo "::: sudo is needed to run pihole commands.  Please run this script as root or install sudo."
     exit 1
   fi
 fi
 
-function whitelistFunc {
-	shift
-	$SUDO /opt/pihole/whitelist.sh "$@"
-	exit 1
+webpageFunc() {
+  source /opt/pihole/webpage.sh
+  main "$@"
+  exit 0
 }
 
-function blacklistFunc {
-	shift
-	$SUDO /opt/pihole/blacklist.sh "$@"
-	exit 1
+whitelistFunc() {
+ "${PI_HOLE_SCRIPT_DIR}"/list.sh "$@"
+  exit 0
 }
 
-function debugFunc {
-	$SUDO /opt/pihole/piholeDebug.sh
-	exit 1
+blacklistFunc() {
+  "${PI_HOLE_SCRIPT_DIR}"/list.sh "$@"
+  exit 0
 }
 
-function flushFunc {
-	$SUDO /opt/pihole/piholeLogFlush.sh
-	exit 1
+debugFunc() {
+  "${PI_HOLE_SCRIPT_DIR}"/piholeDebug.sh
+  exit 0
 }
 
-function updateDashboardFunc {
-	$SUDO /opt/pihole/updateDashboard.sh
-	exit 1
+flushFunc() {
+  "${PI_HOLE_SCRIPT_DIR}"/piholeLogFlush.sh
+  exit 0
 }
 
-function updateGravityFunc {
-	$SUDO /opt/pihole/gravity.sh
-	exit 1
+updatePiholeFunc() {
+  "${PI_HOLE_SCRIPT_DIR}"/update.sh
+  exit 0
 }
 
-function setupLCDFunction {
-	$SUDO /opt/pihole/setupLCD.sh
-	exit 1
+reconfigurePiholeFunc() {
+  /etc/.pihole/automated\ install/basic-install.sh --reconfigure
+  exit 0;
 }
 
-function chronometerFunc {
-	shift
-	$SUDO /opt/pihole/chronometer.sh "$@"
-	exit 1
+updateGravityFunc() {
+  "${PI_HOLE_SCRIPT_DIR}"/gravity.sh "$@"
+  exit 0
+}
+
+setupLCDFunction() {
+  "${PI_HOLE_SCRIPT_DIR}"/setupLCD.sh
+  exit 0
+}
+
+scanList(){
+  domain="${1}"
+  list="${2}"
+  method="${3}"
+  if [[ ${method} == "-exact" ]] ; then
+    grep -i -E "(^|\s)${domain}($|\s)" "${list}"
+  else
+    grep -i "${domain}" "${list}"
+  fi
+}
+
+queryFunc() {
+  domain="${2}"
+  method="${3}"
+  lists=( /etc/pihole/list.* /etc/pihole/blacklist.txt)
+  for list in ${lists[@]}; do
+    result=$(scanList ${domain} ${list} ${method})
+    # Remove empty lines before couting number of results
+    count=$(sed '/^\s*$/d' <<< "$result" | wc -l)
+    echo "::: ${list} (${count} results)"
+    if [[ ${count} > 0 ]]; then
+      echo "${result}"
+    fi
+    echo ""
+  done
+  exit 0
+}
+
+chronometerFunc() {
+  shift
+  "${PI_HOLE_SCRIPT_DIR}"/chronometer.sh "$@"
+  exit 0
 }
 
 
-function uninstallFunc {
-	$SUDO /opt/pihole/uninstall.sh
-	exit 1
+uninstallFunc() {
+  "${PI_HOLE_SCRIPT_DIR}"/uninstall.sh
+  exit 0
 }
 
-function helpFunc {
-	echo "::: Control all PiHole specific functions!"
-	echo ":::"
-	echo "::: Usage: pihole [options]"
-	echo ":::		Add -h after -w (whitelist), -b (blacklist), or -c (chronometer)  for more information on usage"
-	echo ":::"
-	echo "::: Options:"
-	echo ":::  -w, whitelist			Whitelist domains"
-	echo ":::  -b, blacklist			Blacklist domains"
-	echo ":::  -d, debug 				Start a debugging session if having trouble"
-	echo ":::  -f, flush 				Flush the pihole.log file"
-	echo ":::  -u, updateDashboard			Update the web dashboard manually"
-	echo ":::  -g, updateGravity			Update the list of ad-serving domains"
-	echo ":::  -s, setupLCD				Automatically configures the Pi to use the 2.8 LCD screen to display stats on it"
-	echo ":::  -c, chronometer			Calculates stats and displays to an LCD"
-	echo ":::  -h, help				Show this help dialog"
-	echo ":::  uninstall				Uninstall Pi-Hole from your system!"
-	exit 1
+versionFunc() {
+  shift
+  "${PI_HOLE_SCRIPT_DIR}"/version.sh "$@"
+  exit 0
+}
+
+restartDNS() {
+  dnsmasqPid=$(pidof dnsmasq)
+  if [[ ${dnsmasqPid} ]]; then
+    # service already running - reload config
+    if [ -x "$(command -v systemctl)" ]; then
+      systemctl restart dnsmasq
+    else
+      service dnsmasq restart
+    fi
+  else
+    # service not running, start it up
+    if [ -x "$(command -v systemctl)" ]; then
+      systemctl start dnsmasq
+    else
+      service dnsmasq start
+    fi
+  fi
+}
+
+piholeEnable() {
+  if [[ "${1}" == "0" ]] ; then
+    #Disable Pihole
+    sed -i 's/^addn-hosts=\/etc\/pihole\/gravity.list/#addn-hosts=\/etc\/pihole\/gravity.list/' /etc/dnsmasq.d/01-pihole.conf
+    echo "::: Blocking has been disabled!"
+    if [[ $# > 1 ]] ; then
+      if [[ ${2} == *"s"* ]] ; then
+        tt=${2%"s"}
+        echo "::: Blocking will be re-enabled in ${tt} seconds"
+        nohup bash -c "sleep ${tt}; pihole enable" </dev/null &>/dev/null &
+      elif [[ ${2} == *"m"* ]] ; then
+        tt=${2%"m"}
+        echo "::: Blocking will be re-enabled in ${tt} minutes"
+        tt=$((${tt}*60))
+        nohup bash -c "sleep ${tt}; pihole enable" </dev/null &>/dev/null &
+      else
+        echo "::: Unknown format for delayed reactivation of the blocking!"
+        echo "::: Example:"
+        echo ":::    pihole disable 5s    -    will disable blocking for 5 seconds"
+        echo ":::    pihole disable 7m    -    will disable blocking for 7 minutes"
+        echo "::: Blocking will not automatically be re-enabled!"
+      fi
+    fi
+  else
+    #Enable pihole
+    echo "::: Blocking has been enabled!"
+    sed -i 's/^#addn-hosts/addn-hosts/' /etc/dnsmasq.d/01-pihole.conf
+  fi
+  restartDNS
+}
+
+piholeLogging() {
+  shift
+
+  if [[ "${1}" == "off" ]] ; then
+    #Disable Logging
+    sed -i 's/^log-queries/#log-queries/' /etc/dnsmasq.d/01-pihole.conf
+    sed -i 's/^QUERY_LOGGING=true/QUERY_LOGGING=false/' /etc/pihole/setupVars.conf
+    pihole -f
+    echo "::: Logging has been disabled!"
+  elif [[ "${1}" == "on" ]] ; then
+    #Enable logging
+    sed -i 's/^#log-queries/log-queries/' /etc/dnsmasq.d/01-pihole.conf
+    sed -i 's/^QUERY_LOGGING=false/QUERY_LOGGING=true/' /etc/pihole/setupVars.conf
+    echo "::: Logging has been enabled!"
+  else
+    echo "::: Invalid option passed, please pass 'on' or 'off'"
+    exit 1
+  fi
+  restartDNS
+}
+
+piholeStatus() {
+  if [[ $(netstat -plnt | grep -c ':53 ') > 0 ]]; then
+    if [[ "${1}" != "web" ]] ; then
+      echo "::: DNS service is running"
+    fi
+  else
+    if [[ "${1}" == "web" ]] ; then
+      echo "-1";
+    else
+      echo "::: DNS service is NOT running"
+    fi
+    return
+  fi
+
+  if [[ $(grep -i "^#addn-hosts=/" /etc/dnsmasq.d/01-pihole.conf) ]] ; then
+    #list is commented out
+    if [[ "${1}" == "web" ]] ; then
+      echo 0;
+    else
+      echo "::: Pi-hole blocking is Disabled";
+    fi
+  elif [[ $(grep -i "^addn-hosts=/" /etc/dnsmasq.d/01-pihole.conf) ]] ; then
+    #list set
+    if [[ "${1}" == "web" ]] ; then
+      echo 1;
+    else
+      echo "::: Pi-hole blocking is Enabled";
+    fi
+  else
+    #addn-host not found
+    if [[ "${1}" == "web" ]] ; then
+      echo 99
+    else
+      echo ":::  No hosts file linked to dnsmasq, adding it in enabled state"
+    fi
+    #add addn-host= to dnsmasq
+    echo "addn-hosts=/etc/pihole/gravity.list" >> /etc/dnsmasq.d/01-pihole.conf
+    restartDNS
+  fi
+}
+
+tailFunc() {
+  echo "Press Ctrl-C to exit"
+  tail -F /var/log/pihole.log
+  exit 0
+}
+
+helpFunc() {
+	cat << EOM
+::: Control all PiHole specific functions!
+:::
+::: Usage: pihole [options]
+:::		Add -h after -w (whitelist), -b (blacklist), -c (chronometer), or -a (admin)  for more information on usage
+:::
+::: Options:
+:::  -w, whitelist            Whitelist domains
+:::  -b, blacklist            Blacklist domains
+:::  -d, debug                Start a debugging session if having trouble
+:::  -f, flush                Flush the pihole.log file
+:::  -t, tail                 Output the last lines of the pihole.log file. Lines are appended as the file grows
+:::  -up, updatePihole        Update Pi-hole
+:::  -r, reconfigure          Reconfigure or Repair Pi-hole
+:::  -g, updateGravity        Update the list of ad-serving domains
+:::  -s, setupLCD             Automatically configures the Pi to use the 2.8 LCD screen to display stats on it
+:::  -c, chronometer          Calculates stats and displays to an LCD
+:::  -h, help                 Show this help dialog
+:::  -v, version              Show current versions
+:::  -q, query                Query the adlists for a specific domain
+:::                           Use pihole -q domain -exact if you want to see exact matches only
+:::  -l, logging              Enable or Disable logging (pass 'on' or 'off')
+:::  -a, admin                Admin webpage options
+:::  uninstall                Uninstall Pi-Hole from your system :(!
+:::  status                   Is Pi-Hole Enabled or Disabled
+:::  enable                   Enable Pi-Hole DNS Blocking
+:::  disable                  Disable Pi-Hole DNS Blocking
+:::                           Blocking can also be disabled only temporarily, e.g.,
+:::                           pihole disable 5m - will disable blocking for 5 minutes
+:::  restartdns               Restart dnsmasq
+EOM
+  exit 0
 }
 
 if [[ $# = 0 ]]; then
-	helpFunc
+  helpFunc
 fi
 
 # Handle redirecting to specific functions based on arguments
-case "$1" in
-"-w" | "whitelist"			) whitelistFunc "$@";;
-"-b" | "blacklist"			) blacklistFunc "$@";;
-"-d" | "debug"				) debugFunc;;
-"-f" | "flush"				) flushFunc;;
-"-u" | "updateDashboard"	) updateDashboardFunc;;
-"-g" | "updateGravity"		) updateGravityFunc;;
-"-s" | "setupLCD"			) setupLCDFunction;;
-"-c" | "chronometer"		) chronometerFunc "$@";;
-"-h" | "help"				) helpFunc;;
-"uninstall"					) uninstallFunc;;
-*                    		) helpFunc;;
+case "${1}" in
+  "-w" | "whitelist"            ) whitelistFunc "$@";;
+  "-b" | "blacklist"            ) blacklistFunc "$@";;
+  "-d" | "debug"                ) debugFunc;;
+  "-f" | "flush"                ) flushFunc;;
+  "-up" | "updatePihole"        ) updatePiholeFunc;;
+  "-r"  | "reconfigure"         ) reconfigurePiholeFunc;;
+  "-g" | "updateGravity"        ) updateGravityFunc "$@";;
+  "-s" | "setupLCD"             ) setupLCDFunction;;
+  "-c" | "chronometer"          ) chronometerFunc "$@";;
+  "-h" | "help"                 ) helpFunc;;
+  "-v" | "version"              ) versionFunc "$@";;
+  "-q" | "query"                ) queryFunc "$@";;
+  "-l" | "logging"              ) piholeLogging "$@";;
+  "uninstall"                   ) uninstallFunc;;
+  "enable"                      ) piholeEnable 1;;
+  "disable"                     ) piholeEnable 0 $2;;
+  "status"                      ) piholeStatus "$2";;
+  "restartdns"                  ) restartDNS;;
+  "-a" | "admin"                ) webpageFunc "$@";;
+  "-t" | "tail"                 ) tailFunc;;
+  *                             ) helpFunc;;
 esac
